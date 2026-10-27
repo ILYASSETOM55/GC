@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# GCRV - gestionnaire de serveurs V2Ray (Xray VLESS+WS+TLS) sur Google Cloud Run
+GCRV_ROOT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+. "$GCRV_ROOT/lib/common.sh"
+. "$GCRV_ROOT/lib/gcloud.sh"
+. "$GCRV_ROOT/lib/services.sh"
+. "$GCRV_ROOT/lib/users.sh"
+
+usage() {
+cat <<EOT
+Usage : gcrv [commande]
+
+  menu                                  menu interactif (defaut)
+  service-create <nom> [region] [path] [memoire] [min_instances]
+  service-list
+  service-delete <nom>
+  user-add <service> <utilisateur> [jours]
+  user-del <service> <utilisateur>
+  user-list <service>
+  link <service> <utilisateur>
+  expire-check                          supprime les comptes expires
+EOT
+}
+
+pick_service() {
+  [ -s "$SERVICES_DB" ] || { err "Aucun service" ; return 1; }
+  local i=0 n
+  while IFS='|' read -r n _; do i=$((i+1)); echo "  $i) $n" >&2; done < "$SERVICES_DB"
+  read -rp "Numero du service : " i
+  n=$(sed -n "${i}p" "$SERVICES_DB" | cut -d'|' -f1)
+  [ -n "$n" ] || { err "Choix invalide"; return 1; }
+  echo "$n"
+}
+
+pick_user() {
+  user_list "$1" >&2
+  read -rp "Nom de l'utilisateur : " u
+  echo "$u"
+}
+
+settings_menu() {
+  FRONT_IP=$(ask "IP Google (front)" "$FRONT_IP")
+  SNI=$(ask "SNI" "$SNI")
+  DEFAULT_REGION=$(ask "Region par defaut" "$DEFAULT_REGION")
+  MAX_USERS=$(ask "Utilisateurs max par service" "$MAX_USERS")
+  MAX_INSTANCES=$(ask "Instances max Cloud Run (plafond de ressources)" "$MAX_INSTANCES")
+  save_conf; ok "Parametres enregistres"
+}
+
+enable_cron() {
+  local self; self=$(readlink -f "${BASH_SOURCE[0]}")
+  local line="0 * * * * PATH=\"$PATH\" $self expire-check >> $GCRV_HOME/cron.log 2>&1"
+  ( crontab -l 2>/dev/null | grep -v 'expire-check'; echo "$line" ) | crontab - \
+    && ok "Expiration automatique activee (toutes les heures)"
+}
+
+menu() {
+  while true; do
+    echo -e "\n${C}=========== GCRV - V2Ray sur Cloud Run ===========${N}"
+    echo " 1) Installer gcloud"
+    echo " 2) Connexion Google + projet"
+    echo " 3) Creer un service"
+    echo " 4) Lister les services"
+    echo " 5) Supprimer un service"
+    echo " 6) Ajouter un utilisateur"
+    echo " 7) Supprimer un utilisateur"
+    echo " 8) Lister les utilisateurs"
+    echo " 9) Afficher un lien"
+    echo "10) Parametres"
+    echo "11) Activer l'expiration automatique (cron)"
+    echo " 0) Quitter"
+    read -rp "Choix : " c
+    case "$c" in
+      1) install_gcloud ;;
+      2) login_gcloud ;;
+      3) n=$(ask "Nom du service" "v2ray-$(date +%H%M)")
+         r=$(ask "Region" "$DEFAULT_REGION")
+         p=$(ask "Path WebSocket" "/vless_$n")
+         m=$(ask "Memoire" "512Mi")
+         mi=$(ask "Instances minimum (0 = eco, 1 = sans demarrage a froid)" "0")
+         svc_create "$n" "$r" "$p" "$m" "$mi" ;;
+      4) svc_list ;;
+      5) s=$(pick_service) && { read -rp "Supprimer '$s' ? (o/N) " k; [[ "$k" =~ ^[oOyY]$ ]] && svc_delete "$s"; } ;;
+      6) s=$(pick_service) && { u=$(ask "Nom de l'utilisateur" "client1"); d=$(ask "Duree en jours (0 = illimite)" "30"); user_add "$s" "$u" "$d"; } ;;
+      7) s=$(pick_service) && { u=$(pick_user "$s"); user_del "$s" "$u"; } ;;
+      8) s=$(pick_service) && user_list "$s" ;;
+      9) s=$(pick_service) && { u=$(pick_user "$s"); user_link "$s" "$u"; } ;;
+      10) settings_menu ;;
+      11) enable_cron ;;
+      0) exit 0 ;;
+      *) err "Choix invalide" ;;
+    esac
+  done
+}
+
+cmd="${1:-menu}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  menu)           menu ;;
+  service-create) [ $# -ge 1 ] || { usage; exit 1; }; svc_create "$@" ;;
+  service-list)   svc_list ;;
+  service-delete) [ $# -eq 1 ] || { usage; exit 1; }; svc_delete "$1" ;;
+  user-add)       [ $# -ge 2 ] || { usage; exit 1; }; user_add "$@" ;;
+  user-del)       [ $# -eq 2 ] || { usage; exit 1; }; user_del "$@" ;;
+  user-list)      [ $# -eq 1 ] || { usage; exit 1; }; user_list "$1" ;;
+  link)           [ $# -eq 2 ] || { usage; exit 1; }; user_link "$@" ;;
+  expire-check)   expire_check ;;
+  -h|--help|help) usage ;;
+  *)              usage; exit 1 ;;
+esac
