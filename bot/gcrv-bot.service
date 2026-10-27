@@ -1,0 +1,15 @@
+[Unit]
+Description=GCRV Telegram bot
+After=network-online.target
+
+[Service]
+# Utiliser le meme utilisateur que celui qui a fait "gcloud auth login"
+User=root
+Environment=HOME=/root
+EnvironmentFile=/opt/gcrv/bot/.env
+ExecStart=/usr/bin/python3 /opt/gcrv/bot/bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
